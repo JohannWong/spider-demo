@@ -77,13 +77,18 @@ class GovDataSpider(object):
         try:
             url = self.base_url.format(self.host_url)
             self.header_dict['Accept'] = 'application/json'
+            code = None
+            if 'id' in menu_dict:
+                code = menu_dict.get('id')
+            elif 'code' in menu_dict:
+                code = menu_dict.get('code')
             default_data = {
                 "m": 'QueryData',
                 "dbcode": 'hgyd',
                 "rowcode": 'zb',
                 "colcode": 'sj',
                 "wds": '[]',
-                "dfwds": '[{"wdcode":"zb","valuecode":"'+menu_dict.get('id')+'"}]',
+                "dfwds": '[{"wdcode":"zb","valuecode":"'+code+'"}]',
                 "k1": int(round(time.time()*1000)),
                 "h": '1', }
             resp = requests.get(
@@ -121,6 +126,12 @@ class GovDataSpider(object):
         res_count = self.db_cursor.execute(sql)
         return True if res_count else False
 
+    def _data_exists(self, data_dict: Dict[str, Any]) -> bool:
+        sql = "select code from hgyd_data where code='{}'".format(
+            data_dict.get('code'))
+        res_count = self.db_cursor.execute(sql)
+        return True if res_count else False
+
     def menu_exists(self, menu_dict: Dict[str, Any]) -> bool:
         self.get_db_conn()
         res = self._menu_exists(menu_dict=menu_dict)
@@ -133,14 +144,20 @@ class GovDataSpider(object):
         self.close_db_conn()
         return res
 
+    def data_exists(self, data_dict: Dict[str, Any]) -> bool:
+        self.get_db_conn()
+        res = self._data_exists(data_dict=data_dict)
+        self.close_db_conn()
+        return res
+
     def insert_menu(self, menu_list: List[Dict[str, Any]]):
         self.get_db_conn()
         for menu_dict in menu_list:
             if not self._menu_exists(menu_dict):
                 try:
                     ins_menu = ("insert into hgyd_menu"
-                                 " (id, db_code, is_parent, name, pid, wd_code, active)"
-                                 " values ('{}', '{}', {}, '{}', '{}', '{}', {})").format(
+                                " (id, db_code, is_parent, name, pid, wd_code, active)"
+                                " values ('{}', '{}', {}, '{}', '{}', '{}', {});").format(
                         menu_dict.get('id'),
                         menu_dict.get('dbcode'),
                         1 if menu_dict.get('isParent') else 0,
@@ -167,7 +184,7 @@ class GovDataSpider(object):
                                 " (code, name, dot_count, `exp`, if_show_code, memo, node_sort,"
                                 " sort_code, tag, unit, active)"
                                 " VALUES('{}', '{}', {}, '{}', {}, '{}',"
-                                " '{}', {}, '{}', '{}', {})").format(
+                                " '{}', {}, '{}', '{}', {});").format(
                         node_dict.get('code'),
                         node_dict.get('name'),
                         node_dict.get('dotcount'),
@@ -189,21 +206,44 @@ class GovDataSpider(object):
                     continue
         self.close_db_conn()
 
-    def get_zb_from_db(
+    def insert_data(self, data_list: List[Dict[str, Any]]):
+        self.get_db_conn()
+        for data_dict in data_list:
+            if not self._data_exists(data_dict):
+                try:
+                    zb_code = sj_code = ""
+                    for wd_dict in data_dict.get('wds'):
+                        if wd_dict.get('wdcode') == 'zb':
+                            zb_code = wd_dict.get('valuecode')
+                        elif wd_dict.get('wdcode') == 'sj':
+                            sj_code = wd_dict.get('valuecode')
+                    ins_data = ("INSERT INTO gov_data_stat.hgyd_data"
+                                " (code, `data`, str_data, dot_count, has_data, zb_code, sj_code)"
+                                " VALUES('{}', {}, '{}', {}, {}, '{}', '{}');").format(
+                        data_dict.get('code'),
+                        data_dict.get('data').get('data'),
+                        data_dict.get('data').get('strdata') if len(
+                            data_dict.get('data').get('strdata')) > 0 else None,
+                        data_dict.get('data').get('dotcount'),
+                        1 if data_dict.get('data').get('hasdata') else 0,
+                        zb_code,
+                        sj_code, )
+                    ins_data = ins_data.replace("'None'", "NULL")
+                    ins_data = ins_data.replace("''", "NULL")
+                    self.db_cursor.execute(ins_data)
+                    self.db_conn.commit()
+                except Exception as ex:
+                    print(ex)
+                    self.db_conn.rollback()
+                    continue
+        self.close_db_conn()
+
+    def get_menu_from_db(
             self, condition_dict: Dict[str, Any]) -> Union[List[Dict[str, Any]], None]:
         self.get_db_conn()
         sql = ("SELECT id, db_code, is_parent, name, pid, wd_code, active "
                "FROM gov_data_stat.hgyd_menu")
-        key_list = [k for k in condition_dict.keys()]
-        if condition_dict and len(condition_dict) > 0:
-            for i in range(len(condition_dict)):
-                sql += " Where" if i==0 else " And"
-                sql += " {} {} {}".format(
-                    key_list[i],
-                    condition_dict.get(key_list[i])[0],
-                    condition_dict.get(key_list[i])[1] if isinstance(
-                        condition_dict.get(key_list[i])[1], (int, float)) else "'{}'".format(
-                        condition_dict.get(key_list[i])[1]), )
+        sql = _merge_sql_condition(sql=sql, condition_dict=condition_dict)
         self.db_cursor.execute(sql)
         res = self.db_cursor.fetchall()
         self.close_db_conn()
@@ -215,6 +255,31 @@ class GovDataSpider(object):
             'pid': x[4],
             'wdcode': x[5],
             'active': True if x[6] else False,
+        } for x in res] if len(res) > 0 else []
+
+    def get_node_from_db(
+            self, condition_dict: Dict[str, Any]) -> Union[List[Dict[str, Any]], None]:
+        self.get_db_conn()
+        sql = ("SELECT code, name, dot_count, `exp`, if_show_code, "
+               "memo, node_sort, sort_code, tag, unit, active "
+               "FROM gov_data_stat.hgyd_node")
+        sql = _merge_sql_condition(sql=sql, condition_dict=condition_dict)
+        self.db_cursor.execute(sql)
+        res = self.db_cursor.fetchall()
+        self.close_db_conn()
+        return [{
+            'code': x[0],
+            'cname': x[1],
+            'name': x[1],
+            'dotcount': x[2],
+            'exp': x[3],
+            'ifshowcode': True if x[4] else False,
+            'memo': x[5],
+            'nodesort': x[6],
+            'sortcode': x[7],
+            'tag': x[8],
+            'unit': x[9],
+            'active': True if x[10] else False,
         } for x in res] if len(res) > 0 else []
 
     def get_db_conn(self):
@@ -244,41 +309,69 @@ class GovDataSpider(object):
                 time.sleep(5)
         self.insert_menu(all_menu_list)
 
-    def collect_node_records(self, input_code: Union[str, None]=None):
-        if not input_code:
-            print('输入抽取的menu_id：')
-            input_code = input().strip()
+    def _get_zb_by_code(self, input_code: Union[str, None]=None):
         if input_code and len(input_code) > 0:
-            check_menu_list = self.get_zb_from_db({
-                'id': ['like', '%{}%'.format(input_code)],
-                'is_parent': ['=', 0],
+            check_menu_list = self.get_node_from_db({
+                'code': ['like', '%{}%'.format(input_code)],
                 'active': ['=', 1], })
         else:
-            check_menu_list = self.get_zb_from_db({
-                'is_parent': ['=', 0],
+            check_menu_list = self.get_node_from_db({
                 'active': ['=', 1], })
-        all_node_list = []
+        raw_res_list = []
         for menu_dict in check_menu_list:
             res = self.get_zb(menu_dict=menu_dict)
-            if res.get('returncode') != 200:
+            if not res:
+                print('不能获取远程数据！')
+                continue
+            elif res.get('returncode') != 200:
                 print(res.get('returndata'))
                 continue
             else:
-                wd_node_list = res.get('returndata').get('wdnodes')
-                for wd_node in wd_node_list:
-                    # 只收集指标节点
-                    if wd_node.get('wdcode') == 'zb':
-                        all_node_list.extend(wd_node.get('nodes'))
+                raw_res_list.append(res)
             time.sleep(5)
+        return raw_res_list
+
+    def collect_node_records(self, input_code: Union[str, None]=None):
+        raw_res_list = self._get_zb_by_code(input_code=input_code)
+        all_node_list = []
+        for res in raw_res_list:
+            wd_node_list = res.get('returndata').get('wdnodes')
+            for wd_node in wd_node_list:
+                # 只收集指标节点
+                if wd_node.get('wdcode') == 'zb':
+                    all_node_list.extend(wd_node.get('nodes'))
         self.insert_node(all_node_list)
 
+    def collect_data_records(self, input_code: Union[str, None]=None):
+        raw_res_list = self._get_zb_by_code(input_code=input_code)
+        all_data_list = []
+        for res in raw_res_list:
+            data_list = res.get('returndata').get('datanodes')
+            all_data_list.extend(data_list)
+        self.insert_data(all_data_list)
+
     def collect_multi_node_records(self):
-        code_dict_list = self.get_zb_from_db({
-                'char_length(id)': ['=', 5],
+        menu_dict_list = self.get_menu_from_db({
+            'char_length(id)': ['=', 5],
+            'active': ['=', 1], })
+        menu_id_list = [menu_dict.get('id') for menu_dict in menu_dict_list]
+        for menu_id in menu_id_list:
+            self.collect_node_records(input_code=menu_id)
+            print('{} 完成！'.format(menu_id))
+
+    def collect_multi_data_records(self):
+        print('输入抽取的menu_id：')
+        input_code = input().strip()
+        if input_code:
+            node_dict_list = self.get_node_from_db({
+                'code': ['like', '%{}%'.format(input_code)],
                 'active': ['=', 1], })
-        code_list = [code_dict.get('id') for code_dict in code_dict_list]
-        for code in code_list:
-            self.collect_node_records(input_code=code)
+        else:
+            node_dict_list = self.get_node_from_db({
+                'active': ['=', 1], })
+        node_code_list = [node_dict.get('code') for node_dict in node_dict_list]
+        for code in node_code_list:
+            self.collect_data_records(input_code=code)
             print('{} 完成！'.format(code))
 
     def run(self):
@@ -289,12 +382,27 @@ class GovDataSpider(object):
             input_code = int(input_code)
             func_dict = {
                 1: self.collect_menu_records,
-                2: self.collect_multi_node_records, }
+                2: self.collect_multi_node_records,
+                3: self.collect_multi_data_records, }
             func_dict[input_code]()
         else:
             menu_dict = {'id': input_code}
             res = self._get_zb_data(menu_dict=menu_dict)
             print(res)
+
+
+def _merge_sql_condition(sql: str, condition_dict: Dict[str, Any]) -> str:
+    key_list = [k for k in condition_dict.keys()]
+    if condition_dict and len(condition_dict) > 0:
+        for i in range(len(condition_dict)):
+            sql += " Where" if i == 0 else " And"
+            sql += " {} {} {}".format(
+                key_list[i],
+                condition_dict.get(key_list[i])[0],
+                condition_dict.get(key_list[i])[1] if isinstance(
+                    condition_dict.get(key_list[i])[1], (int, float)) else "'{}'".format(
+                    condition_dict.get(key_list[i])[1]), )
+    return sql
 
 
 if __name__ == '__main__':
