@@ -17,7 +17,7 @@ CREATE TABLE `gov_data_stat`.`hgyd_menu` (
 -- gov_data_stat.hgyd_data definition
 CREATE TABLE `gov_data_stat`.`hgyd_data` (
   `code` varchar(30) COLLATE utf8mb4_0900_bin NOT NULL,
-  `data` decimal(10,4) NOT NULL,
+  `data` decimal(20,4) NOT NULL,
   `str_data` varchar(10) COLLATE utf8mb4_0900_bin DEFAULT NULL,
   `dot_count` int NOT NULL,
   `has_data` tinyint(1) NOT NULL,

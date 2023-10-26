@@ -374,6 +374,19 @@ class GovDataSpider(object):
             self.collect_data_records(input_code=code)
             print('{} 完成！'.format(code))
 
+    def collect_multi_data_by_list(self):
+        input_code_list = [
+            'A010F', 'A010G', 'A0201', 'A0202', 'A0203', 'A0204', 'A0205', 'A0206',]
+        for input_code in input_code_list:
+            node_dict_list = self.get_node_from_db({
+                'code': ['like', '%{}%'.format(input_code)],
+                'active': ['=', 1], })
+
+            node_code_list = [node_dict.get('code') for node_dict in node_dict_list]
+            for code in node_code_list:
+                self.collect_data_records(input_code=code)
+                print('{} 完成！'.format(code))
+
     def run(self):
         html = self.get_base_html()
         print('输入操作指令：')
@@ -383,7 +396,8 @@ class GovDataSpider(object):
             func_dict = {
                 1: self.collect_menu_records,
                 2: self.collect_multi_node_records,
-                3: self.collect_multi_data_records, }
+                3: self.collect_multi_data_records,
+                4: self.collect_multi_data_by_list, }
             func_dict[input_code]()
         else:
             menu_dict = {'id': input_code}
